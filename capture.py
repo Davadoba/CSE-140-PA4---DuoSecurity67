@@ -7,6 +7,8 @@ import pacai.capture.gamestate
 import pacai.capture.agents
 import pacai.search.distance
 import pacai.capture.board
+import pacai.core.board
+from pacai.core.board import Position
 
 def create_team() -> list[pacai.core.agentinfo.AgentInfo]:
     """
@@ -43,6 +45,7 @@ class MyAgent1(pacai.capture.agents.OffensiveAgent):
         if this_agent_pos is None:
             return float('-inf')
 
+        # Setup
         enemy_food_positions = state.get_food(agent_index=self.agent_index)
         num_food = state.food_count(agent_index=self.agent_index)
         if num_food == 0:
@@ -98,30 +101,40 @@ class MyAgent2(pacai.capture.agents.DefensiveAgent):
         if this_agent_pos is None:
             return float('-inf')
 
-        enemy_food_positions = state.get_food(agent_index=self.agent_index)
-        num_food = state.food_count(agent_index=self.agent_index)
-        if num_food == 0:
-            return float('inf')
+        # Invader Info
+        invader_dict = state.get_invader_positions(self.agent_index)
+        invader_positions = set(invader_dict.values())
+
+        # Non-Invading Opponent Info
+        opp_dict = state.get_opponent_positions(self.agent_index)
+        opp_ghost_positions = set(opp_dict.values()) - invader_positions
 
         evaluation = 0
+        
+        # Edge of Border X Position
+        border_col = state.board.width // 2
+        if self.agent_index % 2 == 1:
+            border_col += 1
+        
+        # Prioritize Chasing Invaders.
+        # If No Invaders, Approach Enemy Ghosts But Don't Cross Border.
+        evaluation -= len(invader_positions) * 100
+        if len(invader_positions) > 0:
+            min_invader_distance = min(
+                pacai.search.distance.maze_distance(i, this_agent_pos, state)
+                for i in invader_positions
+            )
+            evaluation -= min_invader_distance * 3
+        else :
+            if len(opp_ghost_positions) > 0:
+                min_opp_distance = min(
+                    pacai.search.distance.maze_distance(g, this_agent_pos, state)
+                    for g in opp_ghost_positions
+                )
+                evaluation -= min_opp_distance * 2
 
-        # Chase Enemy Food & Incentivize Eating
-        evaluation -= num_food * 100
-        min_food_distance = min(
-            pacai.search.distance.maze_distance(f, this_agent_pos, state)
-            for f in enemy_food_positions
-        )
-        evaluation -= min_food_distance * 3
-
-        # Incentivize being a pacman
-        if state.is_ghost(self.agent_index):
-            evaluation -= 20
-
-        # Avoid Ghosts While Invading
+        # For Now, This Agent Should Never Be A Pacman
         if state.is_pacman(self.agent_index):
-            for (_, pos) in state.get_nonscared_opponent_positions(agent_index=self.agent_index).items():
-                dist = pacai.search.distance.maze_distance(pos, this_agent_pos, state)
-                if dist < 3:
-                    evaluation -= (4 - dist) * 20
+            evaluation -= 1000
 
         return evaluation
