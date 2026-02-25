@@ -30,6 +30,8 @@ class MyAgent1(pacai.capture.agents.OffensiveAgent):
         for action in legal_actions:
             successor = state.generate_successor(action)
             score = self.evaluate_state(successor, action)
+            if action == pacai.core.action.STOP:
+                score -= 100
             if score > max_score:
                 max_score = score
                 best_action = action
@@ -53,10 +55,22 @@ class MyAgent1(pacai.capture.agents.OffensiveAgent):
 
         evaluation = 0
 
+        # Penalize for being in recent positions
+        recency_penalty = 0
+        history = self.last_positions
+        lookback = 10
+        for i, past_pos in enumerate(reversed(history[-lookback:])):
+            if past_pos is None:
+                continue
+            if past_pos == this_agent_pos:
+                recency_penalty += (lookback - i) * 5
+        evaluation -= recency_penalty
+
         # Chase Enemy Food & Incentivize Eating
+        # Use euclidean distance for speed
         evaluation -= num_food * 100
         min_food_distance = min(
-            pacai.search.distance.maze_distance(f, this_agent_pos, state)
+            pacai.search.distance.euclidean_distance(f, this_agent_pos, state)
             for f in enemy_food_positions
         )
         evaluation -= min_food_distance * 3
@@ -110,12 +124,12 @@ class MyAgent2(pacai.capture.agents.DefensiveAgent):
         opp_ghost_positions = set(opp_dict.values()) - invader_positions
 
         evaluation = 0
-        
+
         # Edge of Border X Position
         border_col = state.board.width // 2
         if self.agent_index % 2 == 1:
             border_col += 1
-        
+
         # Prioritize Chasing Invaders.
         # If No Invaders, Approach Enemy Ghosts But Don't Cross Border.
         evaluation -= len(invader_positions) * 100
@@ -125,12 +139,27 @@ class MyAgent2(pacai.capture.agents.DefensiveAgent):
                 for i in invader_positions
             )
             evaluation -= min_invader_distance * 3
-        else :
-            if len(opp_ghost_positions) > 0:
-                min_opp_distance = min(
-                    pacai.search.distance.maze_distance(g, this_agent_pos, state)
-                    for g in opp_ghost_positions
-                )
+        else:
+            legal_border_positions = []
+            for row in range(state.board.height):
+                p = Position(row, border_col)
+                if not state.board.is_wall(p):
+                    legal_border_positions.append(p)
+
+            if len(opp_ghost_positions) > 0 and len(legal_border_positions) > 0:
+                min_opp_distance = float('inf')
+                for g in opp_ghost_positions:
+                    closest_border_tile = min(
+                        legal_border_positions,
+                        key=lambda b, g=g: abs(b.row - g.row)
+                    )
+
+                    dist = pacai.search.distance.maze_distance(
+                        closest_border_tile,
+                        this_agent_pos,
+                        state
+                    )
+                    min_opp_distance = min(min_opp_distance, dist)
                 evaluation -= min_opp_distance * 2
 
         # For Now, This Agent Should Never Be A Pacman
