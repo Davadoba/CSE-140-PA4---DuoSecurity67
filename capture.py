@@ -10,6 +10,9 @@ import pacai.capture.board
 import pacai.core.board
 from pacai.core.board import Position
 
+# https://chatgpt.com/share/699fea4f-5070-8008-a494-1e86e946df76
+# This chatGPT convo has some suggestions for improvements(most recent message)
+
 def create_team() -> list[pacai.core.agentinfo.AgentInfo]:
     """
     Get the agent information that will be used to create a capture team.
