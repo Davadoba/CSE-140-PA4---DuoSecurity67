@@ -22,6 +22,7 @@ def create_team() -> list[pacai.core.agentinfo.AgentInfo]:
 
 class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
     """ Shared Logic Between Agents """
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.maze_cache = {}
@@ -29,6 +30,8 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         self.repeated_positions_counter = 0
         self.prev_food_count = None
         self.prev_position = None
+        self.start_offense = False
+        self.opportunistic_offense = False
 
     def cached_maze_distance(self, pos1, pos2, state):
         """ Cache Expensive Maze Distance Calculations """
@@ -142,6 +145,13 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
                 best_tile = tile
 
         return best_tile
+    
+    def distance_to_border(self, state, pos):
+        """ Distance To Border(Used For Role Switching Logic)"""
+        possible_positions = self.get_border_positions(state)
+        return min(pacai.search.distance.manhattan_distance(pos, b, state)
+                   for b in possible_positions
+                )
     
     def evaluate_offense(self, state):
         """ Offensive Agent Logic """
@@ -324,34 +334,11 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         return evaluation
 
 class MyAgent1(BaseCaptureAgent):
-    """ Agent 1(Red?) - Offensive Bias """
+    """ Permanent Defense For Now """
 
-    def get_action(self, state):
-        legal_actions = state.get_legal_actions()
-        # legal_actions = [a for a in state.get_legal_actions() if a != pacai.core.action.STOP]
-        max_score = float('-inf')
-        best_action = None
-
-        for action in legal_actions:
-            successor = state.generate_successor(action)
-            score = 0
-
-            # Decide Offense vs Defense
-            score = self.evaluate_offense(successor)
-            
-            if score > max_score:
-                max_score = score
-                best_action = action
-        
-        # Update Class Variables
-        self.prev_food_count = state.food_count(agent_index=self.agent_index)
-        self.prev_position = state.get_agent_positions()[self.agent_index]
-        
-        return best_action
-
-class MyAgent2(BaseCaptureAgent):
-    """ Second Agent (Orange?) - Defensive Bias """
-
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
     def get_action(self, state):
         legal_actions = state.get_legal_actions()
         # legal_actions = [a for a in state.get_legal_actions() if a != pacai.core.action.STOP]
@@ -364,6 +351,61 @@ class MyAgent2(BaseCaptureAgent):
 
             # Decide Offense vs Defense
             score = self.evaluate_defense(successor)
+            
+            if score > max_score:
+                max_score = score
+                best_action = action
+        
+        # Update Class Variables
+        self.prev_food_count = state.food_count(agent_index=self.agent_index)
+        self.prev_position = state.get_agent_positions()[self.agent_index]
+        
+        return best_action
+
+class MyAgent2(BaseCaptureAgent):
+    """ Defensive, But Goes On Offense If Close To Border """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.opportunistic_offense = False
+
+    def is_offensive_role(self, state):
+        """ When To Go On Offense """
+        agent_positions = state.get_agent_positions()
+        my_pos = agent_positions[self.agent_index]
+
+        # If we died → reset behavior
+        if my_pos is None:
+            self.opportunistic_offense = False
+            return False
+
+        # Once offensive, remain offensive
+        if self.opportunistic_offense:
+            return True
+
+        # Switch when near border
+        border_dist = self.distance_to_border(state, my_pos)
+        if border_dist <= 5:
+            self.opportunistic_offense = True
+            return True
+
+        return False
+    
+    def get_action(self, state):
+        legal_actions = state.get_legal_actions()
+        # legal_actions = [a for a in state.get_legal_actions() if a != pacai.core.action.STOP]
+        max_score = float('-inf')
+        best_action = None
+
+        for action in legal_actions:
+            successor = state.generate_successor(action)
+            score = 0
+
+            # Decide Offense vs Defense
+            if self.is_offensive_role(state):
+                score = self.evaluate_offense(successor)
+            else:
+                score = self.evaluate_defense(successor)
 
             if score > max_score:
                 max_score = score
