@@ -327,6 +327,34 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
                     total_patrol_score += ghost_score
                 evaluation += total_patrol_score * 5
 
+        # Defenders should spread out when idling to cover more ground
+        pos_dict = state.get_ally_positions(self.agent_index)
+        if len(pos_dict) > 0:
+            teammate_index = list(pos_dict.keys())[0]
+            teammate_pos = pos_dict[teammate_index]
+        else:
+            teammate_pos = None
+
+        if teammate_pos is not None and not state.is_pacman(teammate_index):
+            # Use Manhattan Distance For Speed(High Cache-Miss Rate In This Use-Case)
+            team_dist = pacai.search.distance.manhattan_distance(this_agent_pos, teammate_pos, state)
+            invader_count = len(invader_positions)
+
+            # Desired spacing scales with board size
+            base_spacing = max(6, state.board.width // 4)
+
+            if invader_count == 0:
+                desired_spacing = base_spacing
+            elif invader_count == 1:
+                # Collapse To Trap
+                desired_spacing = int(base_spacing // 2)
+            else:
+                # Two invaders → moderate spacing so defenders split coverage
+                desired_spacing = base_spacing * 0.75
+
+            if team_dist < desired_spacing:
+                evaluation -= (desired_spacing - team_dist) * 20
+        
         # Defensive agent should not cross border
         if state.is_pacman(self.agent_index):
             evaluation -= 1000
@@ -335,9 +363,6 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
 
 class MyAgent1(BaseCaptureAgent):
     """ Permanent Defense For Now """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
     
     def get_action(self, state):
         legal_actions = state.get_legal_actions()
