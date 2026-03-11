@@ -398,6 +398,8 @@ class MyAgent2(BaseCaptureAgent):
         # If we died → reset behavior
         if my_pos is None:
             self.opportunistic_offense = False
+            self.repeated_positions_counter = 0
+            self.kill_switch = 0
             return False
 
         # Once offensive, remain offensive
