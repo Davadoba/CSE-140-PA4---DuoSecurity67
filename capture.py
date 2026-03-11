@@ -1,4 +1,3 @@
-import heapq
 import math
 import pacai.core.action
 import pacai.core.agent
@@ -11,6 +10,8 @@ import pacai.capture.board
 import pacai.core.board
 from pacai.core.board import Position
 import pacai.agents.greedy
+from pacai.search.distance import DistancePreComputer
+from pacai.pacman.board import MARKER_CAPSULE
 
 def create_team() -> list[pacai.core.agentinfo.AgentInfo]:
     """
@@ -32,52 +33,47 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         self.prev_position = None
         self.start_offense = False
         self.opportunistic_offense = False
+        self.distance_precomputer = DistancePreComputer()
+        self.distances_ready = False
 
-    def cached_maze_distance(self, pos1, pos2, state):
-        """ Cache Expensive Maze Distance Calculations """
-        key1 = (pos1.row, pos1.col)
-        key2 = (pos2.row, pos2.col)
-        key = tuple(sorted([key1, key2]))
+    # def cached_maze_distance(self, pos1, pos2):
+    #     """ Cache Expensive Maze Distance Calculations """
+        # key1 = (pos1.row, pos1.col)
+        # key2 = (pos2.row, pos2.col)
+        # key = tuple(sorted([key1, key2]))
 
-        if key in self.maze_cache:
-            return self.maze_cache[key]
+        # if key in self.maze_cache:
+        #     return self.maze_cache[key]
 
-        dist = pacai.search.distance.maze_distance(pos1, pos2, state)
-        self.maze_cache[key] = dist
-        return dist
+        # dist = pacai.search.distance.maze_distance(pos1, pos2, state)
+        # self.maze_cache[key] = dist
+        # return dist
 
-    def is_stuck(self):
-        """ Detect If Offensive Agent Is Trapped """
+    def dist(self, a, b):
+        """ Use Distance Precomputer To Get Distance """
+        return self.distance_precomputer.get_distance_default(a, b, 999)
+    
+    def is_stuck(self, state):
+        """ Detect If Offensive Agent Is Stuck """
         window = 12
-        if len(self.last_positions) < window:
+        last_actions = state.get_agent_actions(self.agent_index)
+        
+        if len(last_actions) < window:
             return False
 
-        recent = [p for p in self.last_positions[-window:] if p is not None]
-        if len(recent) < window:
+        recent = last_actions[-window:]
+
+        # Ignore STOP actions
+        recent = [a for a in recent if a != pacai.core.action.STOP]
+
+        if len(recent) < 6:
             return False
 
-        # Convert to tuple for hashing
-        coords = [(p.row, p.col) for p in recent]
-        unique_tiles = set(coords)
+        # Check if alternating between two actions
+        a = recent[0]
+        b = recent[1]
 
-        # Case 1: 2-Tile Oscillation (A B A B A B)
-        if len(unique_tiles) == 2:
-            return True
-
-        # Case 2: 3-Tile Oscillation
-        if len(unique_tiles) <= 3:
-            revisit_ratio = window / len(unique_tiles)
-            if revisit_ratio > 3:
-                return True
-
-        # Case 3: Minimal Spatial Variation
-        rows = [c[0] for c in coords]
-        cols = [c[1] for c in coords]
-
-        row_spread = max(rows) - min(rows)
-        col_spread = max(cols) - min(cols)
-
-        if row_spread <= 1 and col_spread <= 1:
+        if all(recent[i] == (a if i % 2 == 0 else b) for i in range(len(recent))):
             return True
 
         return False
@@ -109,14 +105,14 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         """ Used By Offensive Agent To Evaluate Border Crossing Points"""
         score = 0
         # Prefer tiles closer to us
-        dist_to_me = self.cached_maze_distance(my_pos, tile, state)
+        dist_to_me = self.dist(my_pos, tile)
         score -= dist_to_me * 2
 
         # Avoid defenders near the border tile
         for (_, enemy_pos) in state.get_nonscared_opponent_positions(
             agent_index=self.agent_index
         ).items():
-            enemy_dist = self.cached_maze_distance(enemy_pos, tile, state)
+            enemy_dist = self.dist(enemy_pos, tile)
             if enemy_dist < 6:
                 score -= (6 - enemy_dist) * 20
 
@@ -125,9 +121,9 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         if len(food) > 0:
             closest_food = min(
                 food,
-                key=lambda f: self.cached_maze_distance(tile, f, state)
+                key=lambda f: self.dist(tile, f)
             )
-            food_dist = self.cached_maze_distance(tile, closest_food, state)
+            food_dist = self.dist(tile, closest_food)
             score -= food_dist
 
         return score
@@ -149,9 +145,32 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
     def distance_to_border(self, state, pos):
         """ Distance To Border(Used For Role Switching Logic)"""
         possible_positions = self.get_border_positions(state)
-        return min(pacai.search.distance.manhattan_distance(pos, b, state)
+        return min(self.dist(pos, b)
                    for b in possible_positions
                 )
+    
+    def get_power_pellets(self, state):
+        """Return list of positions with power capsules on the enemy side."""
+        pellets = []
+        mid = state.board.width // 2
+        modifier = self.get_team_modifier()  # -1 = left team, 1 = right team
+
+        # Define enemy side bounds
+        if modifier == -1:  # we are left team → enemy is right half
+            enemy_cols = range(mid, state.board.width)
+        else:  # we are right team → enemy is left half
+            enemy_cols = range(0, mid)
+
+        # Only scan if the marker exists in the board
+        if MARKER_CAPSULE not in state.board._nonwall_objects:
+            return pellets  # empty list, no pellets left
+
+        for row in range(state.board.height):
+            for col in enemy_cols:
+                pos = Position(row, col)
+                if state.board.is_marker(MARKER_CAPSULE, pos):
+                    pellets.append(pos)
+        return pellets
     
     def evaluate_offense(self, state):
         """ Offensive Agent Logic """
@@ -171,12 +190,12 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         evaluation = 0
         
         # Intentionally Die If We've Been Trapped ------------------
-        if self.is_stuck():
+        if self.is_stuck(state) and state.is_pacman(self.agent_index):
             self.repeated_positions_counter += 1
         else:
             self.repeated_positions_counter = 0
         
-        if self.repeated_positions_counter > 12:
+        if self.repeated_positions_counter > 6:
             self.kill_switch = True
         
         if self.kill_switch:
@@ -184,7 +203,7 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
             for (_, pos) in state.get_nonscared_opponent_positions(
                 agent_index=self.agent_index
             ).items():
-                dist = self.cached_maze_distance(pos, this_agent_pos, state)
+                dist = self.dist(pos, this_agent_pos)
                 if dist < closest_opp_distance:
                     closest_opp_distance = dist
 
@@ -197,38 +216,35 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         evaluation -= num_food * 90
         if self.prev_food_count is not None and num_food < self.prev_food_count:
             evaluation += 300
-        closest_foods = heapq.nsmallest(
-            20,
-            enemy_food_positions,
-            key=lambda pos: pacai.search.distance.euclidean_distance(
-                pos, this_agent_pos, state
-            )
+        
+        min_food_distance = min(
+            self.dist(f, this_agent_pos)
+            for f in enemy_food_positions
         )
-        if closest_foods:
-            min_food_distance = min(
-                self.cached_maze_distance(f, this_agent_pos, state)
-                for f in closest_foods
-            )
-            evaluation -= min_food_distance * 6
+        evaluation -= min_food_distance * 8
 
-        # Border crossing strategy
         if state.is_ghost(self.agent_index):
             best_border = self.get_best_border_tile(state, this_agent_pos)
-            if best_border is not None:
-                dist_to_border = self.cached_maze_distance(
-                    this_agent_pos,
-                    best_border,
-                    state
-                )
-                # Encourage moving toward safest entry
-                evaluation -= dist_to_border * 10
 
+            if best_border is not None:
+                dist_to_border = self.dist(this_agent_pos, best_border)
+                evaluation -= dist_to_border * 15
+
+        # Power Pellet Priority
+        power_pellets = self.get_power_pellets(state)
+        if power_pellets:
+            closest_pellet = min(power_pellets, key=lambda p: self.dist(p, this_agent_pos))
+            evaluation -= self.dist(closest_pellet, this_agent_pos) * 3
+            scared_opps = state.get_scared_opponent_positions(agent_index=self.agent_index)
+            if len(scared_opps) > 0:
+                evaluation += 300
+        
         # Avoid ghosts while invading
         if state.is_pacman(self.agent_index):
             for (_, pos) in state.get_nonscared_opponent_positions(
                 agent_index=self.agent_index
             ).items():
-                dist = self.cached_maze_distance(pos, this_agent_pos, state)
+                dist = self.dist(pos, this_agent_pos)
                 if dist <= 1:
                     evaluation -= 500
                 elif dist <= 3:
@@ -252,14 +268,20 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
         opp_ghost_positions = set(opp_dict.values()) - invader_positions
 
         opp_indices = list(state.get_opponent_positions().keys())
-        def_food = state.get_food(opp_indices[0])
-        
+        if opp_indices:
+            def_food = state.get_food(opp_indices[0])
+        else:
+            def_food = None
         evaluation = 0
 
         border_col = state.board.width // 2
         if self.agent_index % 2 == 1:
             border_col += 1
 
+        border_positions = self.get_border_positions(state)
+        border_dist = min(self.dist(this_agent_pos, b) for b in border_positions)
+        evaluation -= border_dist * 10
+        
         # Prioritize chasing invaders
         evaluation -= len(invader_positions) * 200
 
@@ -267,7 +289,7 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
             best_intercept_score = 0
 
             for invader in invader_positions:
-                invader_dist_to_me = self.cached_maze_distance(this_agent_pos, invader, state)
+                invader_dist_to_me = self.dist(this_agent_pos, invader)
 
                 # --- Direct Pursuit Term ---
                 # Stronger if invader is close, weaker if far
@@ -278,11 +300,11 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
                     # Assume invader targets closest food
                     target_food = min(
                         def_food,
-                        key=lambda f, inv=invader: self.cached_maze_distance(inv, f, state)
+                        key=lambda f, inv=invader: self.dist(inv, f)
                     )
 
-                    invader_to_food = self.cached_maze_distance(invader, target_food, state)
-                    my_to_food = self.cached_maze_distance(this_agent_pos, target_food, state)
+                    invader_to_food = self.dist(invader, target_food)
+                    my_to_food = self.dist(this_agent_pos, target_food)
 
                     # Intercept if we can reach before or roughly the same time
                     intercept_score = invader_to_food - my_to_food
@@ -311,15 +333,11 @@ class BaseCaptureAgent(pacai.agents.greedy.GreedyFeatureAgent):
                     weight_sum = 0
                     
                     for b in candidate_tiles:
-                        enemy_dist = self.cached_maze_distance(
-                            g, b, state
-                        )
+                        enemy_dist = self.dist(g, b)
                         weight = math.exp(-0.5 * enemy_dist)
                         weight = min(weight, 0.3)  # Each Ghost Has A Max-Influence
                         
-                        my_dist = self.cached_maze_distance(
-                            this_agent_pos, b, state
-                        )
+                        my_dist = self.dist(this_agent_pos, b)
                         ghost_score += weight * (-my_dist)
                         weight_sum += weight
                     if weight_sum > 0:
@@ -337,6 +355,12 @@ class MyAgent1(BaseCaptureAgent):
     """ Permanent Defense For Now """
     
     def get_action(self, state):
+        
+        # Distance Precomputation
+        if not self.distances_ready:
+            self.distance_precomputer.compute(state.board)
+            self.distances_ready = True
+        
         legal_actions = state.get_legal_actions()
         # legal_actions = [a for a in state.get_legal_actions() if a != pacai.core.action.STOP]
         max_score = float('-inf')
@@ -389,6 +413,12 @@ class MyAgent2(BaseCaptureAgent):
         return False
     
     def get_action(self, state):
+        
+        # Distance Precomputation
+        if not self.distances_ready:
+            self.distance_precomputer.compute(state.board)
+            self.distances_ready = True
+        
         legal_actions = state.get_legal_actions()
         # legal_actions = [a for a in state.get_legal_actions() if a != pacai.core.action.STOP]
         max_score = float('-inf')
@@ -399,7 +429,7 @@ class MyAgent2(BaseCaptureAgent):
             score = 0
 
             # Decide Offense vs Defense
-            if self.is_offensive_role(state):
+            if self.is_offensive_role(successor):
                 score = self.evaluate_offense(successor)
             else:
                 score = self.evaluate_defense(successor)
